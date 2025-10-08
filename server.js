@@ -91,15 +91,15 @@ app.post('/v1/chat/completions', async (req, res) => {
       }
     }
     
-    // Transform OpenAI request to NIM format (cap max_tokens for cutoffs)
-    const effectiveMaxTokens = max_tokens === 0 || !max_tokens ? 1000 : Math.min(max_tokens, 1000);
+    // Transform OpenAI request to NIM format
+    const effectiveMaxTokens = max_tokens || 800; // Default and cap to avoid timeouts
     const nimRequest = {
       model: nimModel,
       messages: messages,
-      temperature: temperature || 0.6,
+      temperature: temperature || 1.15,
       max_tokens: effectiveMaxTokens,
       extra_body: ENABLE_THINKING_MODE ? { chat_template_kwargs: { thinking: true } } : undefined,
-      stream: stream || false
+      stream: stream || false // Force stream for testing
     };
     
     // Make request to NVIDIA NIM API
@@ -108,126 +108,80 @@ app.post('/v1/chat/completions', async (req, res) => {
         'Authorization': `Bearer ${NIM_API_KEY}`,
         'Content-Type': 'application/json'
       },
-      responseType: stream ? 'stream' : 'json',
-      timeout: 25000 // 25s timeout to handle streams without cutoff
+      responseType: 'stream'
     });
     
-    if (stream) {
-      // Handle streaming response with reasoning (Claude's buffer logic + fixes)
-      res.setHeader('Content-Type', 'text/event-stream');
-      res.setHeader('Cache-Control', 'no-cache');
-      res.setHeader('Connection', 'keep-alive');
-      res.flushHeaders(); // Start stream immediately
+    // Handle streaming response with reasoning
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    
+    let buffer = '';
+    let reasoningStarted = false;
+    
+    response.data.on('data', (chunk) => {
+      buffer += chunk.toString();
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
       
-      let buffer = '';
-      let reasoningStarted = false;
-      let processedLines = 0; // Debug: count processed lines
-      
-      response.data.on('data', (chunk) => {
-        buffer += chunk.toString();
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || ''; // Keep incomplete line in buffer
-        
-        lines.forEach(line => {
-          processedLines++;
-          console.log(`Processed line ${processedLines}: ${line.substring(0, 50)}...`); // Debug log
-          if (line.startsWith('data: ')) {
-            if (line.includes('[DONE]')) {
-              res.write('data: [DONE]\n\n');
-              res.flush();
-              return;
-            }
-            
-            try {
-              const data = JSON.parse(line.slice(6)); // Remove "data: "
-              if (data.choices?.[0]?.delta) {
-                const reasoning = data.choices[0].delta.reasoning_content;
-                const content = data.choices[0].delta.content;
+      lines.forEach(line => {
+        if (line.startsWith('data: ')) {
+          if (line.includes('[DONE]')) {
+            res.write('data: [DONE]\n\n');
+            return;
+          }
+          
+          try {
+            const dataStr = line.slice(6).trim(); // Trim to fix leading space
+            const data = JSON.parse(dataStr);
+            if (data.choices?.[0]?.delta) {
+              const reasoning = data.choices[0].delta.reasoning_content;
+              const content = data.choices[0].delta.content;
+              
+              if (SHOW_REASONING) {
+                let combinedContent = '';
                 
-                if (SHOW_REASONING) {
-                  let combinedContent = '';
-                  
-                  if (reasoning && !reasoningStarted) {
-                    combinedContent = '<think>\n' + reasoning;
-                    reasoningStarted = true;
-                  } else if (reasoning) {
-                    combinedContent = reasoning;
-                  }
-                  
-                  if (content && reasoningStarted) {
-                    combinedContent += '</think>\n\n' + content;
-                    reasoningStarted = false;
-                  } else if (content) {
-                    combinedContent += content;
-                  }
-                  
-                  if (combinedContent) {
-                    data.choices[0].delta.content = combinedContent;
-                    delete data.choices[0].delta.reasoning_content;
-                  }
-                } else {
-                  if (content) {
-                    data.choices[0].delta.content = content;
-                  } else {
-                    data.choices[0].delta.content = '';
-                  }
+                if (reasoning && !reasoningStarted) {
+                  combinedContent = '<think>\n' + reasoning;
+                  reasoningStarted = true;
+                } else if (reasoning) {
+                  combinedContent = reasoning;
+                }
+                
+                if (content && reasoningStarted) {
+                  combinedContent += '</think>\n\n' + content;
+                  reasoningStarted = false;
+                } else if (content) {
+                  combinedContent += content;
+                }
+                
+                if (combinedContent) {
+                  data.choices[0].delta.content = combinedContent;
                   delete data.choices[0].delta.reasoning_content;
                 }
+              } else {
+                if (content) {
+                  data.choices[0].delta.content = content;
+                } else {
+                  data.choices[0].delta.content = '';
+                }
+                delete data.choices[0].delta.reasoning_content;
               }
-              res.write(`data: ${JSON.stringify(data)}\n\n`); // Fixed \n (no \\)
-              res.flush(); // Force send to prevent buffering/cutoffs
-            } catch (e) {
-              console.error('Parse error in line:', line.substring(0, 100), e);
-              res.write(line + '\n\n'); // Fallback raw line
-              res.flush();
             }
+            res.write(`data: ${JSON.stringify(data)}\n\n`);
+          } catch (e) {
+            console.error('Parse error in line:', e);
+            res.write(line + '\n\n'); // Fallback
           }
-        });
-      });
-      
-      response.data.on('end', () => {
-        console.log(`Stream ended, processed ${processedLines} lines`);
-        res.end();
-      });
-      
-      response.data.on('error', (err) => {
-        console.error('Stream error:', err);
-        res.end();
-      });
-    } else {
-      // Non-streaming (for when stream=false in Janitor)
-      // Transform NIM response to OpenAI format with reasoning
-      const openaiResponse = {
-        id: `chatcmpl-${Date.now()}`,
-        object: 'chat.completion',
-        created: Math.floor(Date.now() / 1000),
-        model: model,
-        choices: response.data.choices.map(choice => {
-          let fullContent = choice.message?.content || '';
-          
-          if (SHOW_REASONING && choice.message?.reasoning_content) {
-            fullContent = '<think>\n' + choice.message.reasoning_content + '\n</think>\n\n' + fullContent;
-          }
-          
-          return {
-            index: choice.index,
-            message: {
-              role: choice.message.role,
-              content: fullContent
-            },
-            finish_reason: choice.finish_reason
-          };
-        }),
-        usage: response.data.usage || {
-          prompt_tokens: 0,
-          completion_tokens: 0,
-          total_tokens: 0
         }
-      };
-      
-      res.json(openaiResponse);
-    }
+      });
+    });
     
+    response.data.on('end', () => res.end());
+    response.data.on('error', (err) => {
+      console.error('Stream error:', err);
+      res.end();
+    });
   } catch (error) {
     console.error('Proxy error:', error.message);
     
