@@ -18,7 +18,7 @@ const NIM_API_KEY = process.env.NIM_API_KEY;
 const SHOW_REASONING = false; // Set to true to show reasoning with <think> tags
 
 // 🔥 THINKING MODE TOGGLE - Enables thinking for specific models that support it
-const ENABLE_THINKING_MODE = false; // Set to false to avoid latency/cutoffs
+const ENABLE_THINKING_MODE = true; // Set to false to avoid latency/cutoffs
 
 // Model mapping (DeepSeek V3.1 for gpt-4o; adjust as needed)
 const MODEL_MAPPING = {
