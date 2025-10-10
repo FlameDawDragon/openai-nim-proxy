@@ -1,4 +1,4 @@
-// server.js - OpenAI to NVIDIA NIM API Proxy (Non-Streaming Optimized)
+// server.js - OpenAI to Hugging Face DeepSeek V3 Abliterated Proxy (Uncensored for Janitor AI)
 const express = require('express');
 const cors = require('cors');
 const axios = require('axios');
@@ -10,32 +10,32 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// NVIDIA NIM API configuration
-const NIM_API_BASE = process.env.NIM_API_BASE || 'https://integrate.api.nvidia.com/v1';
-const NIM_API_KEY = process.env.NIM_API_KEY;
+// Hugging Face API configuration
+const HF_API_BASE = process.env.HF_API_BASE || 'https://api-inference.huggingface.co/models/huihui-ai/DeepSeek-V3-abliterated';
+const HF_API_KEY = process.env.HF_API_KEY;
 
 // 🔥 REASONING DISPLAY TOGGLE - Shows/hides reasoning in output
 const SHOW_REASONING = false; // Set to true to show reasoning with <think> tags
 
 // 🔥 THINKING MODE TOGGLE - Enables thinking for specific models that support it
-const ENABLE_THINKING_MODE = true; // Set to false to avoid latency/cutoffs
+const ENABLE_THINKING_MODE = true; // Set to true to enable chat_template_kwargs thinking parameter
 
-// Model mapping (DeepSeek V3.1 for gpt-4o; adjust as needed)
+// Model mapping (adjust based on available HF models; default to uncensored DeepSeek)
 const MODEL_MAPPING = {
-  'gpt-3.5-turbo': 'deepseek-ai/deepseek-v3.1',
-  'gpt-4': 'deepseek-ai/deepseek-v3.1',
-  'gpt-4-turbo': 'deepseek-ai/deepseek-v3.1',
-  'gpt-4o': 'deepseek-ai/deepseek-v3.1',
-  'claude-3-opus': 'deepseek-ai/deepseek-v3.1',
-  'claude-3-sonnet': 'deepseek-ai/deepseek-v3.1',
-  'gemini-pro': 'deepseek-ai/deepseek-v3.1' 
+  'gpt-3.5-turbo': 'huihui-ai/DeepSeek-V3-abliterated',
+  'gpt-4': 'huihui-ai/DeepSeek-V3-abliterated',
+  'gpt-4-turbo': 'huihui-ai/DeepSeek-V3-abliterated',
+  'gpt-4o': 'huihui-ai/DeepSeek-V3-abliterated',
+  'claude-3-opus': 'huihui-ai/DeepSeek-V3-abliterated',
+  'claude-3-sonnet': 'huihui-ai/DeepSeek-V3-abliterated',
+  'gemini-pro': 'huihui-ai/DeepSeek-V3-abliterated'
 };
 
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.json({ 
     status: 'ok', 
-    service: 'OpenAI to NVIDIA NIM Proxy', 
+    service: 'OpenAI to HF DeepSeek V3 Abliterated Proxy', 
     reasoning_display: SHOW_REASONING,
     thinking_mode: ENABLE_THINKING_MODE
   });
@@ -47,7 +47,7 @@ app.get('/v1/models', (req, res) => {
     id: model,
     object: 'model',
     created: Date.now(),
-    owned_by: 'nvidia-nim-proxy'
+    owned_by: 'hf-deepseek-proxy'
   }));
   
   res.json({
@@ -56,60 +56,53 @@ app.get('/v1/models', (req, res) => {
   });
 });
 
-// Chat completions endpoint (main proxy - non-streaming default)
+// Chat completions endpoint (main proxy - non-streaming for stability)
 app.post('/v1/chat/completions', async (req, res) => {
   try {
     const { model, messages, temperature, max_tokens, stream } = req.body;
     
     // Smart model selection with fallback
-    let nimModel = MODEL_MAPPING[model];
-    if (!nimModel) {
-      nimModel = 'deepseek-ai/deepseek-v3.1'; // Default to DeepSeek V3.1
+    let hfModel = MODEL_MAPPING[model];
+    if (!hfModel) {
+      hfModel = 'huihui-ai/DeepSeek-V3-abliterated'; // Default to uncensored variant
     }
     
-    // Transform OpenAI request to NIM format (non-streaming, cap tokens)
+    // Transform OpenAI request to HF format
     const effectiveMaxTokens = max_tokens === 0 || !max_tokens ? 800 : Math.min(max_tokens, 800);
-    const nimRequest = {
-      model: nimModel,
-      messages: messages,
-      temperature: temperature || 1.15, // Passthrough your setting
-      max_tokens: effectiveMaxTokens,
-      extra_body: ENABLE_THINKING_MODE ? { chat_template_kwargs: { thinking: true } } : undefined,
-      stream: false // Force non-streaming to avoid parse errors
+    const hfRequest = {
+      inputs: messages.map(m => `${m.role}: ${m.content}`).join('\n\n') + '\n\nassistant:', // Simple prompt format for HF
+      parameters: {
+        temperature: temperature || 1.15,
+        max_new_tokens: effectiveMaxTokens,
+        do_sample: true
+      }
     };
     
-    // Make request to NVIDIA NIM API
-    const response = await axios.post(`${NIM_API_BASE}/chat/completions`, nimRequest, {
+    // Make request to HF API
+    const response = await axios.post(`${HF_API_BASE}/v1/chat/completions`, hfRequest, {
       headers: {
-        'Authorization': `Bearer ${NIM_API_KEY}`,
+        'Authorization': `Bearer ${HF_API_KEY}`,
         'Content-Type': 'application/json'
       },
       timeout: 30000 // 30s for full response
     });
     
-    // Transform NIM response to OpenAI format with reasoning
+    // Transform HF response to OpenAI format
+    const generatedText = response.data[0].generated_text.trim(); // Extract generated content
     const openaiResponse = {
       id: `chatcmpl-${Date.now()}`,
       object: 'chat.completion',
       created: Math.floor(Date.now() / 1000),
       model: model,
-      choices: response.data.choices.map(choice => {
-        let fullContent = choice.message?.content || '';
-        
-        if (SHOW_REASONING && choice.message?.reasoning_content) {
-          fullContent = '<think>\n' + choice.message.reasoning_content + '\n</think>\n\n' + fullContent;
-        }
-        
-        return {
-          index: choice.index,
-          message: {
-            role: choice.message.role,
-            content: fullContent
-          },
-          finish_reason: choice.finish_reason
-        };
-      }),
-      usage: response.data.usage || {
+      choices: [{
+        index: 0,
+        message: {
+          role: 'assistant',
+          content: generatedText
+        },
+        finish_reason: 'stop'
+      }],
+      usage: {
         prompt_tokens: 0,
         completion_tokens: 0,
         total_tokens: 0
@@ -117,8 +110,6 @@ app.post('/v1/chat/completions', async (req, res) => {
     };
     
     res.json(openaiResponse);
-    console.log('Full response sent, tokens:', effectiveMaxTokens); // Debug log
-    
   } catch (error) {
     console.error('Proxy error:', error.message);
     
@@ -144,7 +135,7 @@ app.all('*', (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`OpenAI to NVIDIA NIM Proxy running on port ${PORT}`);
+  console.log(`OpenAI to HF DeepSeek V3 Abliterated Proxy running on port ${PORT}`);
   console.log(`Health check: http://localhost:${PORT}/health`);
   console.log(`Reasoning display: ${SHOW_REASONING ? 'ENABLED' : 'DISABLED'}`);
   console.log(`Thinking mode: ${ENABLE_THINKING_MODE ? 'ENABLED' : 'DISABLED'}`);
