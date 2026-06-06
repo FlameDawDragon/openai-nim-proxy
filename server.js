@@ -11,7 +11,7 @@ if (!ELECTRONHUB_API_KEY) {
   throw new Error('ELECTRONHUB_API_KEY environment variable is required');
 }
 
-const BASE_URL = 'https://api.electronhub.ai/v1';
+const BASE_URL = 'https://api.meshapi.ai/v1';
 
 app.all('/v1/*', async (req, res) => {
   const path = req.originalUrl.replace('/v1', '');
